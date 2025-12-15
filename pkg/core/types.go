@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"math/big"
 )
 
 // Hash represents a 32-byte hash

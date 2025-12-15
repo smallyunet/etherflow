@@ -8,7 +8,6 @@ import (
 
 	"github.com/username/etherflow"
 	"github.com/username/etherflow/pkg/core"
-	"github.com/username/etherflow/pkg/spi"
 )
 
 // MockSource implements spi.BlockSource for demonstration
@@ -93,7 +92,7 @@ func main() {
 
 	// 4. Register Reorg Handler
 	indexer.OnReorg(func(ctx context.Context, forkPoint *core.Block, oldChain []*core.Block, newChain []*core.Block) error {
-		fmt.Printf("[Reorg] Fork detected at block %d. Dropping %d blocks, adding %d blocks.\n", 
+		fmt.Printf("[Reorg] Fork detected at block %d. Dropping %d blocks, adding %d blocks.\n",
 			forkPoint.Number, len(oldChain), len(newChain))
 		return nil
 	})
