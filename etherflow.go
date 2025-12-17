@@ -24,6 +24,9 @@ type Indexer struct {
 	reorgHandler core.ReorgHandler
 	
 	pollingInterval time.Duration
+	
+	// startBlock is the block number to start indexing from if no state is found
+	startBlock uint64
 }
 
 // New creates a new Indexer instance
@@ -35,6 +38,16 @@ func New(source spi.BlockSource, store spi.StateStore) *Indexer {
 		handlers:        make(map[string]core.Handler),
 		pollingInterval: 2 * time.Second,
 	}
+}
+
+// SetStartBlock sets the block number to start indexing from if no state is found
+func (i *Indexer) SetStartBlock(number uint64) {
+	i.startBlock = number
+}
+
+// SetPollingInterval sets the interval for checking new blocks
+func (i *Indexer) SetPollingInterval(interval time.Duration) {
+	i.pollingInterval = interval
 }
 
 // On registers a handler for a specific event
@@ -90,7 +103,7 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 	// This logic needs to be robust. For now, let's assume we track the last processed block in memory via monitor or store.
 	// Simplified: get last processed from store + 1
 	lastProcessed, _ := i.store.GetLastBlock(ctx)
-	nextHeight := uint64(0)
+	nextHeight := i.startBlock
 	if lastProcessed != nil {
 		nextHeight = lastProcessed.Number + 1
 	}

@@ -83,6 +83,8 @@ func TestIndexer_ReorgFlow(t *testing.T) {
 	}
 	store := &E2EStore{}
 	indexer := etherflow.New(source, store)
+	indexer.SetStartBlock(1)
+	indexer.SetPollingInterval(10 * time.Millisecond)
 
 	// Track events
 	eventCount := 0
