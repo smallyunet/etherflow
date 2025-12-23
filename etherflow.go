@@ -25,20 +25,20 @@ type Indexer struct {
 
 	// reorgHandler is called when a reorg occurs
 	reorgHandler core.ReorgHandler
-
-	// backoff for RPC calls
-	backoff *util.Backoff
 }
 
 // New creates a new Indexer instance
 func New(cfg *config.Config, source spi.BlockSource, store spi.StateStore) *Indexer {
+	backoff := util.NewBackoff(cfg.MaxRetries, cfg.RetryDelay)
+	// Wrap source with retry logic
+	retryingSource := spi.NewRetryingBlockSource(source, backoff)
+
 	return &Indexer{
 		cfg:      cfg,
-		source:   source,
+		source:   retryingSource,
 		store:    store,
-		monitor:  monitor.NewChainMonitor(source, store),
+		monitor:  monitor.NewChainMonitor(retryingSource, store),
 		handlers: make(map[string]core.Handler),
-		backoff:  util.NewBackoff(cfg.MaxRetries, cfg.RetryDelay),
 	}
 }
 
@@ -91,13 +91,8 @@ func (i *Indexer) Run(ctx context.Context) error {
 }
 
 func (i *Indexer) processNextBlock(ctx context.Context) error {
-	// 1. Get latest block from node with retry
-	var latestHeight uint64
-	err := i.backoff.Retry(ctx, func() error {
-		var err error
-		latestHeight, _, err = i.source.LatestBlock(ctx)
-		return err
-	})
+	// 1. Get latest block from node with retry (handled by source wrapper)
+	latestHeight, _, err := i.source.LatestBlock(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get latest block: %w", err)
 	}
@@ -117,13 +112,8 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 		return nil // Up to date
 	}
 
-	// 3. Fetch the next block with retry
-	var nextBlock *core.Block
-	err = i.backoff.Retry(ctx, func() error {
-		var err error
-		nextBlock, err = i.source.GetBlockByNumber(ctx, nextHeight)
-		return err
-	})
+	// 3. Fetch the next block with retry (handled by source wrapper)
+	nextBlock, err := i.source.GetBlockByNumber(ctx, nextHeight)
 	if err != nil {
 		return fmt.Errorf("failed to fetch block %d: %w", nextHeight, err)
 	}

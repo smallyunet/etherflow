@@ -1,26 +1,36 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds the configuration for the EtherFlow indexer
 type Config struct {
-	RPCURL          string
-	DBPath          string
-	PollingInterval time.Duration
-	StartBlock      uint64
-	MaxRetries      int
-	RetryDelay      time.Duration
+	RPCURL          string        `yaml:"rpc_url"`
+	DBDriver        string        `yaml:"db_driver"` // sqlite or postgres
+	DBPath          string        `yaml:"db_path"`   // Path for sqlite, DSN for postgres
+	PollingInterval time.Duration `yaml:"polling_interval"`
+	StartBlock      uint64        `yaml:"start_block"`
+	MaxRetries      int           `yaml:"max_retries"`
+	RetryDelay      time.Duration `yaml:"retry_delay"`
 }
 
-// Load loads configuration from environment variables
-// In a real app, this might also load from a YAML file
+// Load loads configuration from environment variables or a config file
 func Load() (*Config, error) {
+	// 1. Check if config file is specified
+	if configPath := os.Getenv("ETHERFLOW_CONFIG_PATH"); configPath != "" {
+		return LoadFromFile(configPath)
+	}
+
+	// 2. Fallback to env vars
 	cfg := &Config{
 		RPCURL:          getEnv("ETHERFLOW_RPC_URL", "http://localhost:8545"),
+		DBDriver:        getEnv("ETHERFLOW_DB_DRIVER", "sqlite"),
 		DBPath:          getEnv("ETHERFLOW_DB_PATH", "etherflow.db"),
 		PollingInterval: getEnvDuration("ETHERFLOW_POLLING_INTERVAL", 2*time.Second),
 		StartBlock:      getEnvUint64("ETHERFLOW_START_BLOCK", 0),
@@ -28,6 +38,34 @@ func Load() (*Config, error) {
 		RetryDelay:      getEnvDuration("ETHERFLOW_RETRY_DELAY", 1*time.Second),
 	}
 	return cfg, nil
+}
+
+// LoadFromFile loads configuration from a YAML file
+func LoadFromFile(path string) (*Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer f.Close()
+
+	var cfg Config
+	decoder := yaml.NewDecoder(f)
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("failed to decode config file: %w", err)
+	}
+
+	// Set defaults if missing (optional, simplistic approach)
+	if cfg.PollingInterval == 0 {
+		cfg.PollingInterval = 2 * time.Second
+	}
+	if cfg.RetryDelay == 0 {
+		cfg.RetryDelay = 1 * time.Second
+	}
+	if cfg.DBDriver == "" {
+		cfg.DBDriver = "sqlite"
+	}
+
+	return &cfg, nil
 }
 
 func getEnv(key, fallback string) string {
