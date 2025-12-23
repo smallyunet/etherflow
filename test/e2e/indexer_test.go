@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/username/etherflow"
+	"github.com/username/etherflow/pkg/config"
 	"github.com/username/etherflow/pkg/core"
 )
 
@@ -65,10 +66,10 @@ func (m *E2EStore) Rewind(ctx context.Context, height uint64) error {
 		// In a real test we might want to look up the block at height
 		// For this test, we assume the indexer handles the state reset logic via monitor
 		// But the store needs to reflect the rollback.
-		// Let's just set it to nil to force re-sync from that point if needed, 
+		// Let's just set it to nil to force re-sync from that point if needed,
 		// or ideally we should keep history.
 		// For simplicity:
-		m.lastBlock = &core.Block{Number: height} 
+		m.lastBlock = &core.Block{Number: height}
 	}
 	return nil
 }
@@ -82,9 +83,13 @@ func TestIndexer_ReorgFlow(t *testing.T) {
 		},
 	}
 	store := &E2EStore{}
-	indexer := etherflow.New(source, store)
-	indexer.SetStartBlock(1)
-	indexer.SetPollingInterval(10 * time.Millisecond)
+	cfg := &config.Config{
+		PollingInterval: 10 * time.Millisecond,
+		StartBlock:      1,
+		RetryDelay:      1 * time.Millisecond,
+		MaxRetries:      1,
+	}
+	indexer := etherflow.New(cfg, source, store)
 
 	// Track events
 	eventCount := 0
@@ -128,10 +133,10 @@ func TestIndexer_ReorgFlow(t *testing.T) {
 	if !reorgDetected {
 		t.Error("Reorg was not detected")
 	}
-	
+
 	// We expect events from 2b and 3b to be processed
 	// Total events: 2 (initial) + 2 (new chain) = 4
-	// Note: Depending on implementation, old events might be reverted or not. 
+	// Note: Depending on implementation, old events might be reverted or not.
 	// The current simple implementation doesn't "un-emit" events, it just calls ReorgHandler.
 	// But it should process the new blocks.
 	if eventCount < 4 {

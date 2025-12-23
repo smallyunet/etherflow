@@ -5,49 +5,41 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/username/etherflow/pkg/config"
 	"github.com/username/etherflow/pkg/core"
 	"github.com/username/etherflow/pkg/monitor"
 	"github.com/username/etherflow/pkg/spi"
+	"github.com/username/etherflow/pkg/util"
 )
 
 // Indexer is the main entry point for the framework
 type Indexer struct {
+	cfg     *config.Config
 	source  spi.BlockSource
 	store   spi.StateStore
 	monitor core.ChainMonitor
-	
+
 	// handlers maps event signatures (e.g., "Transfer") to their handlers
 	// For simplicity, using string keys. In reality, this might be topic hashes.
 	handlers map[string]core.Handler
-	
+
 	// reorgHandler is called when a reorg occurs
 	reorgHandler core.ReorgHandler
-	
-	pollingInterval time.Duration
-	
-	// startBlock is the block number to start indexing from if no state is found
-	startBlock uint64
+
+	// backoff for RPC calls
+	backoff *util.Backoff
 }
 
 // New creates a new Indexer instance
-func New(source spi.BlockSource, store spi.StateStore) *Indexer {
+func New(cfg *config.Config, source spi.BlockSource, store spi.StateStore) *Indexer {
 	return &Indexer{
-		source:          source,
-		store:           store,
-		monitor:         monitor.NewChainMonitor(source, store),
-		handlers:        make(map[string]core.Handler),
-		pollingInterval: 2 * time.Second,
+		cfg:      cfg,
+		source:   source,
+		store:    store,
+		monitor:  monitor.NewChainMonitor(source, store),
+		handlers: make(map[string]core.Handler),
+		backoff:  util.NewBackoff(cfg.MaxRetries, cfg.RetryDelay),
 	}
-}
-
-// SetStartBlock sets the block number to start indexing from if no state is found
-func (i *Indexer) SetStartBlock(number uint64) {
-	i.startBlock = number
-}
-
-// SetPollingInterval sets the interval for checking new blocks
-func (i *Indexer) SetPollingInterval(interval time.Duration) {
-	i.pollingInterval = interval
 }
 
 // On registers a handler for a specific event
@@ -64,21 +56,27 @@ func (i *Indexer) OnReorg(handler core.ReorgHandler) {
 // Run starts the indexing process
 func (i *Indexer) Run(ctx context.Context) error {
 	fmt.Println("Starting EtherFlow Indexer...")
-	
+
 	// 1. Load initial state
 	lastBlock, err := i.store.GetLastBlock(ctx)
 	if err != nil {
-		// If not found, maybe start from latest or 0?
-		// For now, assume 0 or handle error
-		fmt.Println("No previous state found, starting from scratch or config.")
-	}
-	
-	if lastBlock != nil {
-		i.monitor.AddBlock(lastBlock)
+		fmt.Printf("Error loading initial state: %v\n", err)
 	}
 
-	ticker := time.NewTicker(i.pollingInterval)
+	if lastBlock != nil {
+		fmt.Printf("Resuming from block %d\n", lastBlock.Number)
+		i.monitor.AddBlock(lastBlock)
+	} else {
+		fmt.Printf("No state found. Starting from configured block: %d\n", i.cfg.StartBlock)
+	}
+
+	ticker := time.NewTicker(i.cfg.PollingInterval)
 	defer ticker.Stop()
+
+	// Initial check immediately
+	if err := i.processNextBlock(ctx); err != nil {
+		fmt.Printf("Error processing block: %v\n", err)
+	}
 
 	for {
 		select {
@@ -93,17 +91,24 @@ func (i *Indexer) Run(ctx context.Context) error {
 }
 
 func (i *Indexer) processNextBlock(ctx context.Context) error {
-	// 1. Get latest block from node
-	latestHeight, _, err := i.source.LatestBlock(ctx)
-	if err != nil {
+	// 1. Get latest block from node with retry
+	var latestHeight uint64
+	err := i.backoff.Retry(ctx, func() error {
+		var err error
+		latestHeight, _, err = i.source.LatestBlock(ctx)
 		return err
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get latest block: %w", err)
 	}
 
 	// 2. Determine next block to fetch
-	// This logic needs to be robust. For now, let's assume we track the last processed block in memory via monitor or store.
-	// Simplified: get last processed from store + 1
-	lastProcessed, _ := i.store.GetLastBlock(ctx)
-	nextHeight := i.startBlock
+	lastProcessed, err := i.store.GetLastBlock(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get last processed block: %w", err)
+	}
+
+	nextHeight := i.cfg.StartBlock
 	if lastProcessed != nil {
 		nextHeight = lastProcessed.Number + 1
 	}
@@ -112,10 +117,15 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 		return nil // Up to date
 	}
 
-	// 3. Fetch the next block
-	nextBlock, err := i.source.GetBlockByNumber(ctx, nextHeight)
-	if err != nil {
+	// 3. Fetch the next block with retry
+	var nextBlock *core.Block
+	err = i.backoff.Retry(ctx, func() error {
+		var err error
+		nextBlock, err = i.source.GetBlockByNumber(ctx, nextHeight)
 		return err
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch block %d: %w", nextHeight, err)
 	}
 
 	// 4. Check for Reorg
@@ -130,27 +140,28 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to resolve reorg: %w", err)
 		}
-		
+
 		// Handle Reorg
 		if i.reorgHandler != nil {
 			if err := i.reorgHandler(ctx, forkPoint, oldChain, newChain); err != nil {
 				return err
 			}
 		}
-		
+
 		// Rewind store
 		if err := i.store.Rewind(ctx, forkPoint.Number); err != nil {
-			return err
+			return fmt.Errorf("failed to rewind store: %w", err)
 		}
-		
-		// Re-process new chain is handled by the loop naturally as we reset state?
-		// Actually, ResolveReorg updates the monitor state. We should probably process the newChain blocks now.
+
+		// Process new chain
 		for _, b := range newChain {
 			if err := i.processBlockEvents(ctx, b, true); err != nil {
 				return err
 			}
 			i.monitor.AddBlock(b)
-			i.store.SaveBlock(ctx, b)
+			if err := i.store.SaveBlock(ctx, b); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -170,7 +181,7 @@ func (i *Indexer) processBlockEvents(ctx context.Context, block *core.Block, isR
 		// Match log to handlers
 		// Simplified matching logic
 		// In reality, check log.Topics[0] vs event signature hash
-		
+
 		// For this example, we just iterate all handlers (inefficient but simple)
 		for _, handler := range i.handlers {
 			// Create context
@@ -180,7 +191,7 @@ func (i *Indexer) processBlockEvents(ctx context.Context, block *core.Block, isR
 				Log:     &log,
 				IsReorg: isReorg,
 			}
-			
+
 			if err := handler(eventCtx); err != nil {
 				return err
 			}

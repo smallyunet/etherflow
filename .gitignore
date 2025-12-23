@@ -31,4 +31,4 @@ go.work
 # Project specific
 # Ignore the example binary if built in the directory
 cmd/example/example
-etherflow
+/etherflow

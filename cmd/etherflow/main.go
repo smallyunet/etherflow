@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"github.com/username/etherflow"
+	"github.com/username/etherflow/pkg/config"
 	"github.com/username/etherflow/pkg/core"
 	"github.com/username/etherflow/pkg/spi/eth"
 	"github.com/username/etherflow/pkg/spi/store/sqlite"
@@ -54,22 +55,29 @@ func main() {
 	}
 
 	// 3. Indexer
-	indexer := etherflow.New(client, store)
-	indexer.SetStartBlock(startBlock)
-	indexer.SetPollingInterval(pollInterval)
+	cfg := &config.Config{
+		RPCURL:          rpcURL,
+		DBPath:          dbPath,
+		PollingInterval: pollInterval,
+		StartBlock:      startBlock,
+		MaxRetries:      5,
+		RetryDelay:      1 * time.Second,
+	}
+
+	indexer := etherflow.New(cfg, client, store)
 
 	// Register some default handlers for viewing
 	// In a real app, users would import etherflow and register their own.
 	// This main.go acts as a standalone runner, so maybe we just log everything?
-	// OR, we can provide a plugin system later. 
+	// OR, we can provide a plugin system later.
 	// For now, let's just log reorgs and maybe basic block progress is handled by the indexer logic (which calls handlers).
-	
+
 	// Add a dummy handler to show it's working if they don't modify code
 	// Actually, the user requirement didn't specify what events to listen to.
 	// But without handlers, it just indexes blocks.
-	
+
 	indexer.OnReorg(func(ctx context.Context, forkPoint *core.Block, oldChain []*core.Block, newChain []*core.Block) error {
-		log.Printf("[REORG] Resolved fork at %d. Old chain len: %d, New chain len: %d", 
+		log.Printf("[REORG] Resolved fork at %d. Old chain len: %d, New chain len: %d",
 			forkPoint.Number, len(oldChain), len(newChain))
 		return nil
 	})
