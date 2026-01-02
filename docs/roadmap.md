@@ -20,11 +20,11 @@ This document outlines the development plan for EtherFlow, moving from the curre
 ## ⚡ Phase 2: Performance & Reliability
 **Goal**: Optimize for throughput and observability.
 
-- [ ] **Concurrency Model**
-    - Allow parallel processing of logs within a block (optional, order-dependent).
+- [x] **Concurrency Model**
+    - [x] Allow parallel processing of logs within a block (optional, order-dependent).
     - [x] Async block fetching (prefetching next blocks).
-- [ ] **Advanced Source Features**
-    - Support WebSocket subscriptions (`eth_subscribe`) for lower latency.
+- [x] **Advanced Source Features**
+    - [x] Support WebSocket subscriptions (`eth_subscribe`) for lower latency.
     - Batch RPC requests to reduce network overhead.
 - [ ] **Observability**
     - Integrate Prometheus metrics:

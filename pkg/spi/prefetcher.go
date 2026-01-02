@@ -74,21 +74,18 @@ func (p *Prefetcher) loop(ctx context.Context) {
 
 	// If found, subscribe
 	if subSource != nil {
-		headCh = make(chan *core.Head, 1)
+		headCh = make(chan *core.Head, 1) // Buffered to avoid blocking sender
 		s, err := subSource.SubscribeNewHead(ctx, headCh)
 		if err == nil {
 			sub = s
 			defer sub.Unsubscribe()
-			// fmt.Println("WebSocket subscription enabled for prefetcher")
-		} else {
-			// fmt.Printf("Subscription failed, falling back to polling: %v\n", err)
 		}
 	}
 
-	for {
-		// Determine if we should attempt a fetch
-		shouldFetch := false
+	pollInterval := 2 * time.Second       // Normal polling interval
+	keepAliveInterval := 10 * time.Second // Keep-alive for subscription (in case we miss an event)
 
+	for {
 		select {
 		case <-ctx.Done():
 			return
@@ -98,43 +95,72 @@ func (p *Prefetcher) loop(ctx context.Context) {
 			p.drainBuffer()
 			p.currentHeight = height
 			continue
-		case head := <-headCh:
-			// New block mined!
-			if head.Number >= p.currentHeight {
-				shouldFetch = true
-			}
 		default:
-			// Polling (always try to fetch if we have capacity,
-			// but we rely on blocking send or rate limiting if we don't have new data)
-			// Simplification: We blindly try to fetch.
-			// If we are caught up, the node returns "not found" or "future block" error?
-			// Actually GetBlockByNumber usually returns nil/error if it doesn't exist yet.
-			shouldFetch = true
+			// Fallthrough to fetching logic
 		}
 
-		if shouldFetch {
-			err := p.fetchNext(ctx)
-			if err != nil {
-				// If error (e.g. block not ready), we wait a bit
+		// FETCH ATTEMPT
+		// We try to fetch the current block.
+		err := p.fetchNext(ctx)
+
+		if err == nil {
+			// SUCCESS: Block found and buffered.
+			// Immediate loop to try fetching the next block (Catch-up mode)
+			continue
+		}
+
+		// FAILURE: Block not ready or other error.
+		// We need to wait. The wait strategy depends on mode.
+
+		if sub != nil {
+			// SUBSCRIPTION MODE
+			// We wait for a signal (Head Event) OR a long timeout (Keep-alive)
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.stopCh:
+				return
+			case height := <-p.resetCh:
+				p.drainBuffer()
+				p.currentHeight = height
+				continue // Restart loop
+			case <-headCh:
+				// New block event received!
+				// Loop back to try fetching.
+				continue
+			case <-time.After(keepAliveInterval):
+				// Keep-alive triggered.
+				// Loop back to try fetching just in case.
+				continue
+			case <-sub.Err():
+				// Subscription error. Fallback behavior?
+				// For now, treating as a signal to retry fetching (maybe re-sub logic needed in future)
+				// Returning to loop will retry fetch, if it fails again we come back here.
+				// If sub is dead, we might loop tightly?
+				// Ideally we should detect sub death and switch to polling.
+				// For simplified Phase 2, let's just wait pollInterval if sub errs.
 				select {
+				case <-time.After(pollInterval):
 				case <-ctx.Done():
 					return
-				case <-p.stopCh:
-					return
-				case height := <-p.resetCh:
-					p.drainBuffer()
-					p.currentHeight = height
-					continue
-				case <-time.After(500 * time.Millisecond): // Poll/Retry interval
-					continue
 				}
+				continue
 			}
 		} else {
-			// Passive wait (only if we trust subscription 100%, which we don't fully yet,
-			// but here we fell through default so we actually always poll.
-			// To truly save resources we should rely on headCh more.
-			// But for Phase 2 MVP, just polling + eager fetch on head event is fine.
-			// The eager fetch is implicitly handled because the loop runs.
+			// POLLING MODE
+			// We wait for pollInterval
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.stopCh:
+				return
+			case height := <-p.resetCh:
+				p.drainBuffer()
+				p.currentHeight = height
+				continue
+			case <-time.After(pollInterval):
+				continue
+			}
 		}
 	}
 }
