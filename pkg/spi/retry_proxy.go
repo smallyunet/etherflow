@@ -21,6 +21,11 @@ func NewRetryingBlockSource(inner BlockSource, backoff *util.Backoff) *RetryingB
 	}
 }
 
+// Inner returns the underlying BlockSource
+func (s *RetryingBlockSource) Inner() BlockSource {
+	return s.inner
+}
+
 // LatestBlock returns the latest block number and hash from the node with retry
 func (s *RetryingBlockSource) LatestBlock(ctx context.Context) (uint64, core.Hash, error) {
 	var number uint64

@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/username/etherflow/pkg/core"
+	"github.com/username/etherflow/pkg/spi"
 )
 
 // Client implements spi.BlockSource using go-ethereum's ethclient
@@ -58,17 +59,17 @@ func (c *Client) GetBlockByHash(ctx context.Context, hash core.Hash) (*core.Bloc
 // enrichBlock takes a geth block, fetches its logs, and returns an etherflow core.Block
 func (c *Client) enrichBlock(ctx context.Context, ethBlock *types.Block) (*core.Block, error) {
 	hash := ethBlock.Hash()
-	
+
 	// Fetch logs for this block
 	query := ethereum.FilterQuery{
 		BlockHash: &hash,
 	}
-	
+
 	logs, err := c.rpc.FilterLogs(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch logs for block %s: %w", hash.Hex(), err)
 	}
-	
+
 	coreLogs := make([]core.Log, len(logs))
 	for i, l := range logs {
 		coreLogs[i] = core.Log{
@@ -91,4 +92,38 @@ func (c *Client) enrichBlock(ctx context.Context, ethBlock *types.Block) (*core.
 		Timestamp:  ethBlock.Time(),
 		Logs:       coreLogs,
 	}, nil
+}
+
+// SubscribeNewHead subscribes to new block headers
+// Note: This only works if connected via WS/IPC
+func (c *Client) SubscribeNewHead(ctx context.Context, ch chan<- *core.Head) (spi.Subscription, error) {
+	// Internal channel to receive geth types
+	ethCh := make(chan *types.Header)
+	sub, err := c.rpc.SubscribeNewHead(ctx, ethCh)
+	if err != nil {
+		return nil, err
+	}
+
+	// Start a goroutine to convert types
+	go func() {
+		defer close(ch) // Close downstream when done
+		// Note: We don't unsub the upstream 'sub' here, implementation detail:
+		// When sub.Err() closes or we call Unsubscribe(), this loop terminates.
+
+		for {
+			select {
+			case header := <-ethCh:
+				ch <- &core.Head{
+					Number:     header.Number.Uint64(),
+					Hash:       core.Hash(header.Hash().Hex()),
+					ParentHash: core.Hash(header.ParentHash.Hex()),
+					Timestamp:  header.Time,
+				}
+			case <-sub.Err():
+				return
+			}
+		}
+	}()
+
+	return sub, nil
 }

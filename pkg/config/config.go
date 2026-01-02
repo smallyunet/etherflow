@@ -11,14 +11,15 @@ import (
 
 // Config holds the configuration for the EtherFlow indexer
 type Config struct {
-	RPCURL          string        `yaml:"rpc_url"`
-	DBDriver        string        `yaml:"db_driver"` // sqlite or postgres
-	DBPath          string        `yaml:"db_path"`   // Path for sqlite, DSN for postgres
-	PollingInterval time.Duration `yaml:"polling_interval"`
-	StartBlock      uint64        `yaml:"start_block"`
-	MaxRetries      int           `yaml:"max_retries"`
-	RetryDelay      time.Duration `yaml:"retry_delay"`
-	SafeWindowSize  uint64        `yaml:"safe_window_size"`
+	RPCURL             string        `yaml:"rpc_url"`
+	DBDriver           string        `yaml:"db_driver"` // sqlite or postgres
+	DBPath             string        `yaml:"db_path"`   // Path for sqlite, DSN for postgres
+	PollingInterval    time.Duration `yaml:"polling_interval"`
+	StartBlock         uint64        `yaml:"start_block"`
+	MaxRetries         int           `yaml:"max_retries"`
+	RetryDelay         time.Duration `yaml:"retry_delay"`
+	SafeWindowSize     uint64        `yaml:"safe_window_size"`
+	ParallelProcessing bool          `yaml:"parallel_processing"`
 }
 
 // Load loads configuration from environment variables or a config file
@@ -30,14 +31,15 @@ func Load() (*Config, error) {
 
 	// 2. Fallback to env vars
 	cfg := &Config{
-		RPCURL:          getEnv("ETHERFLOW_RPC_URL", "http://localhost:8545"),
-		DBDriver:        getEnv("ETHERFLOW_DB_DRIVER", "sqlite"),
-		DBPath:          getEnv("ETHERFLOW_DB_PATH", "etherflow.db"),
-		PollingInterval: getEnvDuration("ETHERFLOW_POLLING_INTERVAL", 2*time.Second),
-		StartBlock:      getEnvUint64("ETHERFLOW_START_BLOCK", 0),
-		MaxRetries:      getEnvInt("ETHERFLOW_MAX_RETRIES", 5),
-		RetryDelay:      getEnvDuration("ETHERFLOW_RETRY_DELAY", 1*time.Second),
-		SafeWindowSize:  getEnvUint64("ETHERFLOW_SAFE_WINDOW_SIZE", 128),
+		RPCURL:             getEnv("ETHERFLOW_RPC_URL", "http://localhost:8545"),
+		DBDriver:           getEnv("ETHERFLOW_DB_DRIVER", "sqlite"),
+		DBPath:             getEnv("ETHERFLOW_DB_PATH", "etherflow.db"),
+		PollingInterval:    getEnvDuration("ETHERFLOW_POLLING_INTERVAL", 2*time.Second),
+		StartBlock:         getEnvUint64("ETHERFLOW_START_BLOCK", 0),
+		MaxRetries:         getEnvInt("ETHERFLOW_MAX_RETRIES", 5),
+		RetryDelay:         getEnvDuration("ETHERFLOW_RETRY_DELAY", 1*time.Second),
+		SafeWindowSize:     getEnvUint64("ETHERFLOW_SAFE_WINDOW_SIZE", 128),
+		ParallelProcessing: getEnvBool("ETHERFLOW_PARALLEL_PROCESSING", false),
 	}
 	return cfg, nil
 }
@@ -102,6 +104,15 @@ func getEnvInt(key string, fallback int) int {
 	if value, ok := os.LookupEnv(key); ok {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if value, ok := os.LookupEnv(key); ok {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
 		}
 	}
 	return fallback

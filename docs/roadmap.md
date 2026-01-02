@@ -5,16 +5,16 @@ This document outlines the development plan for EtherFlow, moving from the curre
 ## 🚀 Phase 1: Foundation (MVP)
 **Goal**: Replace mocks with real implementations and verify core mechanics.
 
-- [ ] **RPC Integration**
+- [x] **RPC Integration**
     - Implement `spi.BlockSource` using `go-ethereum/ethclient`.
     - Support standard JSON-RPC methods (`eth_getBlockByNumber`, `eth_getLogs`).
-- [ ] **Persistence Layer**
+- [x] **Persistence Layer**
     - Implement `spi.StateStore` using a SQL driver (PostgreSQL/SQLite).
     - Schema design for tracking cursor (block number, hash) and reorg history.
-- [ ] **Core Loop Refinement**
+- [x] **Core Loop Refinement**
     - Implement robust error handling and exponential backoff for RPC failures.
     - Validate the `ChainMonitor` logic against a local testnet (Anvil/Hardhat) with simulated reorgs.
-- [ ] **Configuration**
+- [x] **Configuration**
     - Design a configuration structure (YAML/Env) for RPC URLs, DB connection strings, and safety window sizes.
 
 ## ⚡ Phase 2: Performance & Reliability
@@ -22,7 +22,7 @@ This document outlines the development plan for EtherFlow, moving from the curre
 
 - [ ] **Concurrency Model**
     - Allow parallel processing of logs within a block (optional, order-dependent).
-    - Async block fetching (prefetching next blocks).
+    - [x] Async block fetching (prefetching next blocks).
 - [ ] **Advanced Source Features**
     - Support WebSocket subscriptions (`eth_subscribe`) for lower latency.
     - Batch RPC requests to reduce network overhead.

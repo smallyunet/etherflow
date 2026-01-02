@@ -19,6 +19,14 @@ type Block struct {
 	Logs       []Log
 }
 
+// Head represents a block header event from a subscription
+type Head struct {
+	Number     uint64
+	Hash       Hash
+	ParentHash Hash
+	Timestamp  uint64
+}
+
 // Log represents an EVM log event
 type Log struct {
 	Address     Address
@@ -26,15 +34,15 @@ type Log struct {
 	Data        []byte
 	BlockNumber uint64
 	TxHash      Hash
-	Index       uint	
+	Index       uint
 }
 
 // EventContext provides context to the handler
 type EventContext struct {
-	Context     context.Context
-	Block       *Block
-	Log         *Log
-	IsReorg     bool // True if this event is being replayed or handled during a reorg resolution
+	Context context.Context
+	Block   *Block
+	Log     *Log
+	IsReorg bool // True if this event is being replayed or handled during a reorg resolution
 }
 
 // Handler is the user-defined callback for events
