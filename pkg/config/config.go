@@ -18,6 +18,7 @@ type Config struct {
 	StartBlock      uint64        `yaml:"start_block"`
 	MaxRetries      int           `yaml:"max_retries"`
 	RetryDelay      time.Duration `yaml:"retry_delay"`
+	SafeWindowSize  uint64        `yaml:"safe_window_size"`
 }
 
 // Load loads configuration from environment variables or a config file
@@ -36,6 +37,7 @@ func Load() (*Config, error) {
 		StartBlock:      getEnvUint64("ETHERFLOW_START_BLOCK", 0),
 		MaxRetries:      getEnvInt("ETHERFLOW_MAX_RETRIES", 5),
 		RetryDelay:      getEnvDuration("ETHERFLOW_RETRY_DELAY", 1*time.Second),
+		SafeWindowSize:  getEnvUint64("ETHERFLOW_SAFE_WINDOW_SIZE", 128),
 	}
 	return cfg, nil
 }
@@ -63,6 +65,9 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if cfg.DBDriver == "" {
 		cfg.DBDriver = "sqlite"
+	}
+	if cfg.SafeWindowSize == 0 {
+		cfg.SafeWindowSize = 128
 	}
 
 	return &cfg, nil

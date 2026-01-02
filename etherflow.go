@@ -37,7 +37,7 @@ func New(cfg *config.Config, source spi.BlockSource, store spi.StateStore) *Inde
 		cfg:      cfg,
 		source:   retryingSource,
 		store:    store,
-		monitor:  monitor.NewChainMonitor(retryingSource, store),
+		monitor:  monitor.NewChainMonitor(retryingSource, store, cfg.SafeWindowSize),
 		handlers: make(map[string]core.Handler),
 	}
 }

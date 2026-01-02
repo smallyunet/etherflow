@@ -32,14 +32,14 @@ func (m *MockSource) GetBlockByHash(ctx context.Context, hash core.Hash) (*core.
 type MockStore struct{}
 
 func (m *MockStore) SaveBlock(ctx context.Context, block *core.Block) error { return nil }
-func (m *MockStore) GetLastBlock(ctx context.Context) (*core.Block, error) { return nil, nil }
+func (m *MockStore) GetLastBlock(ctx context.Context) (*core.Block, error)  { return nil, nil }
 func (m *MockStore) GetBlockByNumber(ctx context.Context, number uint64) (*core.Block, error) {
 	return nil, nil
 }
 func (m *MockStore) Rewind(ctx context.Context, height uint64) error { return nil }
 
 func TestChainMonitor_CheckConsistency(t *testing.T) {
-	monitor := NewChainMonitor(&MockSource{}, &MockStore{})
+	monitor := NewChainMonitor(&MockSource{}, &MockStore{}, 10)
 
 	// 1. Empty monitor should be consistent
 	b1 := &core.Block{Number: 1, Hash: "0x1", ParentHash: "0x0"}
@@ -72,7 +72,7 @@ func TestChainMonitor_CheckConsistency(t *testing.T) {
 	// b2_fork has same number as b2 but different hash/parent
 	// Actually, usually we detect reorg when we see b3' that points to b2' instead of b2
 	// Or if we see b2' directly.
-	
+
 	// Case A: Same height, different hash (implied different parent or content)
 	b2Prime := &core.Block{Number: 2, Hash: "0x2b", ParentHash: "0x1"}
 	consistent, err = monitor.CheckConsistency(b2Prime)
@@ -113,12 +113,12 @@ func TestChainMonitor_ResolveReorg(t *testing.T) {
 			"0x3b": b3b,
 		},
 	}
-	monitor := NewChainMonitor(source, &MockStore{})
+	monitor := NewChainMonitor(source, &MockStore{}, 10)
 	monitor.AddBlock(b1)
 	monitor.AddBlock(b2)
 	monitor.AddBlock(b3)
 
-	// Now we receive b3b. 
+	// Now we receive b3b.
 	// ResolveReorg should find that b3b -> b2b -> b1 (which is in monitor).
 	// Fork point is b1.
 	// Old chain: b2, b3
