@@ -50,3 +50,6 @@ type Handler func(ctx *EventContext) error
 
 // ReorgHandler is called when a chain reorganization is detected
 type ReorgHandler func(ctx context.Context, forkPoint *Block, oldChain []*Block, newChain []*Block) error
+
+// Middleware allows wrapping handlers with additional logic (e.g. logging, metrics)
+type Middleware func(Handler) Handler

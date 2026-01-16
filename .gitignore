@@ -32,3 +32,4 @@ go.work
 # Ignore the example binary if built in the directory
 cmd/example/example
 /etherflow
+*.db

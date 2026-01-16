@@ -3,10 +3,15 @@ package etherflow
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 
 	"github.com/username/etherflow/pkg/config"
 	"github.com/username/etherflow/pkg/core"
+	"github.com/username/etherflow/pkg/metrics"
 	"github.com/username/etherflow/pkg/monitor"
 	"github.com/username/etherflow/pkg/spi"
 	"github.com/username/etherflow/pkg/util"
@@ -20,14 +25,17 @@ type Indexer struct {
 	store   spi.StateStore
 	monitor core.ChainMonitor
 
-	// handlers maps event signatures (e.g., "Transfer") to their handlers
-	// For simplicity, using string keys. In reality, this might be topic hashes.
+	// handlers maps event signatures (e.g., Topic Hash) to their handlers
 	handlers map[string]core.Handler
+
+	// middlewares to apply to all handlers
+	middlewares []core.Middleware
 
 	// reorgHandler is called when a reorg occurs
 	reorgHandler core.ReorgHandler
 
 	prefetcher *spi.Prefetcher
+	logger     *zap.Logger
 }
 
 // New creates a new Indexer instance
@@ -39,6 +47,8 @@ func New(cfg *config.Config, source spi.BlockSource, store spi.StateStore) *Inde
 	// Create prefetcher (buffer size 10 is hardcoded for now, could be config)
 	prefetcher := spi.NewPrefetcher(retryingSource, 10)
 
+	logger, _ := zap.NewProduction()
+
 	return &Indexer{
 		cfg:        cfg,
 		source:     retryingSource,
@@ -46,13 +56,25 @@ func New(cfg *config.Config, source spi.BlockSource, store spi.StateStore) *Inde
 		monitor:    monitor.NewChainMonitor(retryingSource, store, cfg.SafeWindowSize),
 		handlers:   make(map[string]core.Handler),
 		prefetcher: prefetcher,
+		logger:     logger,
 	}
 }
 
-// On registers a handler for a specific event
-// signature could be "Transfer(address,address,uint256)" or just "Transfer" for this simplified version
-func (i *Indexer) On(eventName string, handler core.Handler) {
-	i.handlers[eventName] = handler
+// On registers a handler for a specific event topic
+// eventTopic should be the 0x-prefixed hex string of the event signature hash
+func (i *Indexer) On(eventTopic string, handler core.Handler) {
+	// Apply middlewares
+	wrapped := handler
+	for j := len(i.middlewares) - 1; j >= 0; j-- {
+		wrapped = i.middlewares[j](wrapped)
+	}
+	i.handlers[eventTopic] = wrapped
+}
+
+// Use adds a middleware to the indexer.
+// Note: Middleware must be added BEFORE registering handlers with On().
+func (i *Indexer) Use(mw ...core.Middleware) {
+	i.middlewares = append(i.middlewares, mw...)
 }
 
 // OnReorg registers a handler for reorg events
@@ -62,19 +84,28 @@ func (i *Indexer) OnReorg(handler core.ReorgHandler) {
 
 // Run starts the indexing process
 func (i *Indexer) Run(ctx context.Context) error {
-	fmt.Println("Starting EtherFlow Indexer...")
+	i.logger.Info("Starting EtherFlow Indexer...")
+
+	// Start metrics server
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		i.logger.Info("Starting metrics server on :9090")
+		if err := http.ListenAndServe(":9090", nil); err != nil {
+			i.logger.Error("Failed to start metrics server", zap.Error(err))
+		}
+	}()
 
 	// 1. Load initial state
 	lastBlock, err := i.store.GetLastBlock(ctx)
 	if err != nil {
-		fmt.Printf("Error loading initial state: %v\n", err)
+		i.logger.Error("Error loading initial state", zap.Error(err))
 	}
 
 	if lastBlock != nil {
-		fmt.Printf("Resuming from block %d\n", lastBlock.Number)
+		i.logger.Info("Resuming from block", zap.Uint64("block", lastBlock.Number))
 		i.monitor.AddBlock(lastBlock)
 	} else {
-		fmt.Printf("No state found. Starting from configured block: %d\n", i.cfg.StartBlock)
+		i.logger.Info("No state found. Starting from configured block", zap.Uint64("start_block", i.cfg.StartBlock))
 	}
 
 	ticker := time.NewTicker(i.cfg.PollingInterval)
@@ -89,7 +120,7 @@ func (i *Indexer) Run(ctx context.Context) error {
 	i.prefetcher.Start(ctx, nextHeight)
 
 	if err := i.processNextBlock(ctx); err != nil {
-		fmt.Printf("Error processing block: %v\n", err)
+		i.logger.Error("Error processing block", zap.Error(err))
 	}
 
 	for {
@@ -104,7 +135,7 @@ func (i *Indexer) Run(ctx context.Context) error {
 			// But for now keeping ticker structure. If Next() blocks, ticker ticks will pile up or be skipped?
 			// A simple ticker loop calling a blocking function is okay.
 			if err := i.processNextBlock(ctx); err != nil {
-				fmt.Printf("Error processing block: %v\n", err)
+				i.logger.Error("Error processing block", zap.Error(err))
 			}
 		}
 	}
@@ -116,6 +147,7 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get latest block: %w", err)
 	}
+	metrics.ChainHead.Set(float64(latestHeight))
 
 	// 2. Determine next block to fetch
 	lastProcessed, err := i.store.GetLastBlock(ctx)
@@ -129,6 +161,12 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 	}
 
 	if nextHeight > latestHeight {
+		// Calculate lag even when we are waiting
+		lag := float64(latestHeight) - float64(nextHeight-1)
+		if lag < 0 {
+			lag = 0
+		}
+		metrics.ProcessingLag.Set(lag)
 		return nil // Up to date
 	}
 
@@ -147,7 +185,9 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 		// This can happen if prefetcher was ahead, we restarted, and it gave us old logical next?
 		// Or if we reset prefetcher incorrectly.
 		// For now, let's trust prefetcher logic or reset it if mismatch.
-		fmt.Printf("Warning: Expected block %d, got %d. Resetting prefetcher.\n", nextHeight, nextBlock.Number)
+		i.logger.Warn("Block mismatch, resetting prefetcher",
+			zap.Uint64("expected", nextHeight),
+			zap.Uint64("got", nextBlock.Number))
 		i.prefetcher.Reset(nextHeight)
 		// Try again next tick
 		return nil
@@ -160,7 +200,8 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 	}
 
 	if !consistent {
-		fmt.Printf("Reorg detected at block %d!\n", nextBlock.Number)
+		metrics.ReorgCount.Inc()
+		i.logger.Warn("Reorg detected!", zap.Uint64("block", nextBlock.Number))
 		forkPoint, oldChain, newChain, err := i.monitor.ResolveReorg(ctx, nextBlock)
 		if err != nil {
 			return fmt.Errorf("failed to resolve reorg: %w", err)
@@ -205,7 +246,12 @@ func (i *Indexer) processNextBlock(ctx context.Context) error {
 
 	// 6. Update State
 	i.monitor.AddBlock(nextBlock)
-	return i.store.SaveBlock(ctx, nextBlock)
+	err = i.store.SaveBlock(ctx, nextBlock)
+	if err == nil {
+		metrics.CurrentHeight.Set(float64(nextBlock.Number))
+		metrics.ProcessingLag.Set(float64(latestHeight - nextBlock.Number))
+	}
+	return err
 }
 
 func (i *Indexer) processBlockEvents(ctx context.Context, block *core.Block, isReorg bool) error {
@@ -214,34 +260,38 @@ func (i *Indexer) processBlockEvents(ctx context.Context, block *core.Block, isR
 		g, ctx := errgroup.WithContext(ctx)
 
 		for _, log := range block.Logs {
-			// Copy log for closure
-			log := log
-			g.Go(func() error {
-				for _, handler := range i.handlers {
+			if len(log.Topics) == 0 {
+				continue
+			}
+			topic0 := string(log.Topics[0])
+
+			// Only launch goroutine if we have a handler
+			if handler, ok := i.handlers[topic0]; ok {
+				// Copy for closure
+				log := log
+				g.Go(func() error {
 					eventCtx := &core.EventContext{
 						Context: ctx,
 						Block:   block,
 						Log:     &log,
 						IsReorg: isReorg,
 					}
-					if err := handler(eventCtx); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
+					return handler(eventCtx)
+				})
+			}
 		}
 		return g.Wait()
 	}
 
 	// Sequential processing (default)
 	for _, log := range block.Logs {
-		// Match log to handlers
-		// Simplified matching logic
-		// In reality, check log.Topics[0] vs event signature hash
+		if len(log.Topics) == 0 {
+			continue
+		}
 
-		// For this example, we just iterate all handlers (inefficient but simple)
-		for _, handler := range i.handlers {
+		// Optimistic Topic-based Routing
+		topic0 := string(log.Topics[0])
+		if handler, ok := i.handlers[topic0]; ok {
 			// Create context
 			eventCtx := &core.EventContext{
 				Context: ctx,
@@ -251,6 +301,11 @@ func (i *Indexer) processBlockEvents(ctx context.Context, block *core.Block, isR
 			}
 
 			if err := handler(eventCtx); err != nil {
+				i.logger.Error("Handler failed",
+					zap.String("topic", topic0),
+					zap.Uint64("block", block.Number),
+					zap.Error(err))
+				// Decided: should we fail the block? For now, yes.
 				return err
 			}
 		}

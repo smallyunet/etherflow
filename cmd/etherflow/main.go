@@ -3,21 +3,66 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/username/etherflow"
+	// Ensure we import the sub-package logic if we put it there, but wait, I put it in main package? No I put it in etherflow package?
+	// Wait, I put generator.go in pkg/gen. I need to handle command parsing here.
 	"github.com/username/etherflow/pkg/config"
 	"github.com/username/etherflow/pkg/core"
+	genpkg "github.com/username/etherflow/pkg/gen" // Alias to avoid conflict
 	"github.com/username/etherflow/pkg/spi"
 	"github.com/username/etherflow/pkg/spi/eth"
 	"github.com/username/etherflow/pkg/spi/store/pg"
+	"github.com/username/etherflow/pkg/spi/store/redis"
 	"github.com/username/etherflow/pkg/spi/store/sqlite"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "gen" {
+		runGen()
+		return
+	}
+
+	runIndexer()
+}
+
+func runGen() {
+	genCmd := flag.NewFlagSet("gen", flag.ExitOnError)
+	abiPath := genCmd.String("abi", "", "Path to ABI file")
+	pkgName := genCmd.String("pkg", "handlers", "Package name for generated code")
+	outPath := genCmd.String("out", "handlers.go", "Output file path")
+
+	if err := genCmd.Parse(os.Args[2:]); err != nil {
+		fmt.Printf("Error parsing flags: %v\n", err)
+		os.Exit(1)
+	}
+
+	if *abiPath == "" {
+		fmt.Println("Error: --abi is required")
+		genCmd.PrintDefaults()
+		os.Exit(1)
+	}
+
+	opts := genpkg.GenerateOptions{
+		ABIPath:     *abiPath,
+		PackageName: *pkgName,
+		OutputPath:  *outPath,
+	}
+
+	if err := genpkg.Generate(opts); err != nil {
+		fmt.Printf("Error generating bindings: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Successfully generated bindings in %s\n", *outPath)
+}
+
+func runIndexer() {
 	configPath := flag.String("config", "", "Path to configuration file")
 	flag.Parse()
 
@@ -49,8 +94,13 @@ func main() {
 	case "sqlite":
 		log.Printf("Using SQLite store at: %s", cfg.DBPath)
 		store, err = sqlite.NewStore(cfg.DBPath)
+	case "redis":
+		log.Printf("Using Redis store at: %s", cfg.DBPath)
+		// Assuming DBPath for redis is "addr:password:db" or just "addr"
+		// Simplified parsing:
+		store, err = redis.NewStore(cfg.DBPath, "", 0)
 	default:
-		log.Fatalf("Unknown DB driver: %s. Supported: sqlite, postgres", cfg.DBDriver)
+		log.Fatalf("Unknown DB driver: %s. Supported: sqlite, postgres, redis", cfg.DBDriver)
 	}
 
 	if err != nil {
